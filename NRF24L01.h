@@ -37,13 +37,39 @@
 #include "mbed.h"
 
 /**
- * Macros
+ * Module configuration macros
  */
-#define RX_FIFO_IRQ             1
+
+/* RX FIFO Size. Default: 210 Bytes */
+#if !defined(NRF24L01_RX_FIFO_SIZE)
+#define NRF24L01_RX_FIFO_SIZE     210
+#endif
+
+/* Mask Global IRQ if read/write FIFO data
+ * 0) Kept enabled
+ * 1) Disable (default) */
+#if !defined(NRF24L01_RX_FIFO_DISIRQ)
+#define NRF24L01_RX_FIFO_DISIRQ   1
+#endif
+
+/* Configuration structure type
+ * 0) Raw (without adaptation to CYRF)
+ * 1) New (default) */
+#if !defined(NRF24L01_CONFIG_TYPE)
+#define NRF24L01_CONFIG_TYPE      1
+#endif
+
+/* Runtime PIPE Configuration
+ * 0) Remove
+ * 1) Include */
+#if !defined(NRF24L01_PIPE_RTCONF)
+#define NRF24L01_PIPE_RTCONF      0
+#endif
 
 /* The NRF24L01 FIFOs : RX/TX three level, 32 byte */
-#define NRF24L01_TX_FIFO_SIZE   32
-#define NRF24L01_RX_FIFO_SIZE   32
+#define NRF24L01_TX_HWFIFO_SIZE   32
+#define NRF24L01_RX_HWFIFO_SIZE   32
+
 
 /**
  * NRF24L0101+ Single Chip 2.4GHz Transceiver from Nordic Semiconductor.
@@ -87,9 +113,8 @@ public:
   };
 
   enum ack_t {
-    ACK_DISABLED,
-    ACK_HW,
-    ACK_SW
+    ACK_Disabled,
+    ACK_Enabled
   };
 
   enum crc_t {
@@ -99,7 +124,7 @@ public:
   };
 
   enum txpwr_t {
-    TXPWR_0dBm        = (0x03 << 1),
+    TXPWR_Plus_0dBm   = (0x03 << 1),
     TXPWR_Minus_6dBm  = (0x02 << 1),
     TXPWR_Minus_12dBm = (0x01 << 1),
     TXPWR_Minus_18dBm = (0x00 << 1)
@@ -114,7 +139,8 @@ public:
   enum fifo_t {
     FIFO_RX           = 0x01,
     FIFO_TX           = 0x02,
-    FIFO_RXTX         = 0x03
+    FIFO_RXTX         = 0x03,
+    FIFO_RXSW         = 0x04
   };
 
   enum stat_t {
@@ -132,17 +158,24 @@ public:
     FSTAT_TX_REUSE     = (0x01 << 6)
   };
 
+  enum event_t {
+    EVENT_MAX_RT       = (0x01 << 4),
+    EVENT_TX_DS        = (0x01 << 5),
+    EVENT_RX_DR        = (0x01 << 6),
+    EVENT_TX_DONE      = (0x01 << 7),
+    EVENT_ANY          = (0x0F << 4)
+  };
+
   struct conf_t {
     crc_t    crc;
-    mode_t   defMode;
+    txpwr_t  txPwr;
+    drate_t  dataRate;
+    uint8_t  channel;
+    uint8_t  plSize;
 
     ack_t    ackMode;
     uint16_t ackDelay;
     uint8_t  ackCount;
-
-    txpwr_t  txPwr;
-    drate_t  dataRate;
-    uint8_t  channel;
 
     uint8_t  addrWidth;
     uint8_t  onPipes;
@@ -152,8 +185,6 @@ public:
     uint8_t  rxAddrP3;
     uint8_t  rxAddrP4;
     uint8_t  rxAddrP5;
-
-    uint8_t  plSize;
   };
 
   /**
@@ -172,7 +203,8 @@ public:
    * @param sck  mbed pin to use for SCK line of SPI interface.
    * @param csn  mbed pin to use for chip select line of SPI interface.
    * @param ce   mbed pin to use for the chip enable line.
-   * @param irq  mbed pin to use for the interrupt request line.
+   * @param pwr  mbed pin to use for the chip power enable (optional, in default not connected - NC).
+   * @param irq  mbed pin to use for the interrupt request line (optional, in default not connected - NC).
    */
   NRF24L01(PinName mosi, PinName miso, PinName sck, PinName csn, PinName ce, PinName pwr = NC, PinName irq = NC);
 
@@ -181,7 +213,7 @@ public:
    *
    *  @return True if successful
    */
-  bool Reset(void);
+  bool reset(void);
 
   /**
    * Open NRF24L01 Device
@@ -190,33 +222,26 @@ public:
    *
    * @return True if successful
    */
-  bool Open(const conf_t *conf = NULL);
+  bool open(const conf_t *conf = NULL);
 
   /**
    * Close NRF24L01 Device
    */
-  void Close(void);
+  void close(void);
 
   /**
    * Set the operation mode
    *
    * @param mode
    */
-  bool SetMode(mode_t mode = (mode_t)0xFF);
+  void set_op_mode(mode_t mode);
 
   /**
    * Get info about actual operation mode
    *
    * @return The value representing actual operation mode
    */
-  mode_t GetActualMode(void) { return m_actualMode; }
-
-  /**
-   * Set the default operation mode
-   *
-   * @param mode
-   */
-  void SetDefaultMode(mode_t mode) { m_defaultMode = mode; }
+  mode_t get_op_mode(void) { return m_opMode; }
 
   /**
    * Configure RX Pipe
@@ -228,12 +253,12 @@ public:
    *                 Use 0 for dynamic size or 1 - 32 bytes for fixed size
    *                 If use 0xFF, the value will be reused from conf_t struct. (default: 0xFF)
    */
-  bool ConfRxPipe(uint8_t pipe, bool enable = true, bool autoAck = false, uint8_t plSize = 0xFF);
+  bool set_rx_pipe(uint8_t pipe, bool enable = true, bool autoAck = false, uint8_t plSize = 0xFF);
 
   /**
    * Read current configuration of pipes
    */
-  int GetEnabledPipes(void);
+  int get_enabled_pipes(void);
 
   /**
    * Set the RX address for particular pipe.
@@ -246,42 +271,35 @@ public:
    *  address provided here, and use 2, 3 or 4 bytes from Pipe 1's address.
    *  The width parameter is ignored for Pipes 2..5.
    */
-  void SetRxAddr(uint8_t pipe, uint64_t address);
+  void set_rx_address(uint8_t pipe, uint64_t address);
 
   /**
    * Set the TX address (width 3 - 5 bytes)
    *
    * @param address
    */
-  void SetTxAddr(uint64_t address);
-
-  /**
-   * Set the TX address to particular pipe.
-   *
-   * @param pipe RX pipe (0..5)
-   */
-  void SetTxAddrToPipe(uint8_t pipe);
+  void set_tx_address(uint64_t address, bool ack=true);
 
   /**
    * Set the channel number
    *
    * @param channel
    */
-  void SetChannel(uint8_t channel);
+  void set_channel(uint8_t channel);
 
   /**
    * Set the RF output power.
    *
    * @param power The RF output power in dBm (0, -6, -12 or -18).
    */
-  void SetTxPower(txpwr_t power);
+  void set_tx_power(txpwr_t power);
 
   /**
    * Set the Air data rate.
    *
    * @param rate The air data rate in kbps (250, 1M or 2M).
    */
-  void SetDataRate(drate_t rate);
+  void set_data_rate(drate_t rate);
 
   /**
    * Set AutoRetransmit function
@@ -289,47 +307,67 @@ public:
    * @param delay The delay between restransmit's, in 250us steps  (250 - 4000)
    * @param count number of retransmits before generating an error (1..15)
    */
-  void SetAutoRetrans(uint16_t delay_us, uint8_t count);
+  void set_auto_retrans(uint16_t delay_us, uint8_t count);
 
   /**
    * Get RX/TX FIFO status
    *
    * @return FIFO status value
    */
-  uint8_t GetFifoStatus(void);
+  uint8_t get_fifo_status(void);
 
   /**
    * Flush receive FIFO
    *
    * @param val (FIFO_RX, FIFO_TX or FIFO_RXTX)
    */
-  void FlushFifo(fifo_t val = FIFO_RXTX);
+  void flush_fifo(fifo_t val = FIFO_RXTX);
 
   /**
    * Test if any RX pipe has readable data
    *
    * @return True if RX data ready
    */
-  bool IsReadable(void);
+  bool readable(void);
 
   /**
    * Read data from RX Pipe
    *
-   * @param pipe the receive pipe to get data from
+   * @param pipe the pipe number to get data from
    * @param data pointer to an array of bytes to store the received data
-   * @param len the number of bytes to read from receive buffer (1..32)
+   * @param len  the count of bytes read from receive buffer
    * @return the number of bytes actually received, 0 if none are received, or -1 for an error
    */
-  int RxData(uint8_t *pipe, uint8_t *data, uint8_t len = NRF24L01_RX_FIFO_SIZE);
+  int rx_data(uint8_t *pipe, uint8_t *data, uint8_t len);
 
   /**
    * Transmit data
    *
    * @param data pointer to an array of bytes to write
-   * @param count the number of bytes to send (1..32)
+   * @param len  the number of bytes to send
    * @return the number of bytes actually written, or -1 for an error
    */
-  int TxData(const uint8_t *data, uint8_t len = NRF24L01_TX_FIFO_SIZE, bool ack = true);
+  int tx_data(const uint8_t *data, uint16_t len, bool ack = true);
+
+  /**
+   * Transmit data
+   *
+   * @param pipe the pipe number where will data send
+   * @param data pointer to an array of bytes to write
+   * @param len  the number of bytes to send
+   * @return the number of bytes actually written, or -1 for an error
+   */
+  int tx_data(uint8_t pipe, const uint8_t *data, uint16_t len, bool ack = true);
+
+  /**
+   * Transmit data
+   *
+   * @param address
+   * @param data    pointer to an array of bytes to write
+   * @param count   the number of bytes to send
+   * @return the number of bytes actually written, or -1 for an error
+   */
+  int tx_data_to_address(uint64_t address, const uint8_t *data, uint16_t len, bool ack = true);
 
   /**
    * Register user callback function
@@ -337,12 +375,12 @@ public:
    * @param cbfunc
    * @param mask
    */
-  void AttachCB(rfcb_t cbfunc, uint8_t mask) { m_cbFunc = cbfunc; m_cbMask = mask; };
+  void attach_cb(rfcb_t cbfunc, uint8_t event=EVENT_ANY) { m_cbFunc = cbfunc; m_cbMask = event; };
 
   /**
    * Reuse last transmitted payload.
    */
-  void ReuseTxPayload(void);
+  void reuse_tx_payload(void);
 
   /**
    * Set ACK payload which will transmit with every ACK message
@@ -351,7 +389,7 @@ public:
    * @param data Pointer to data buffer
    * @param len Size of data buffer
    */
-  void SetAckPayload(uint8_t pipe, const uint8_t *data, uint8_t len);
+  int set_ack_payload(uint8_t pipe, const uint8_t *data, uint8_t len);
 
 
   /***************************************************************************************************************
@@ -363,18 +401,18 @@ public:
    *
    * @return True if received power levels is above -64 dBm, other False
    */
-  bool IsCarrierDetected(void);
+  bool is_carrier_detected(void);
 
   /**
    * Start the RF output test in NRF24L01
    * Can be used for measuring the RF output performance
    */
-  void StartCarrierWaveTest(void);
+  void start_carrier_wave_test(void);
 
   /**
    * Stop the RF output test in NRF24L01
    */
-  void StopCarrierWaveTest(void);
+  void stop_carrier_wave_test(void);
 
   /**
    * Read NRF24L01 register
@@ -382,9 +420,9 @@ public:
    * @param reg Register address enum (see reg_t)
    * @return Register value
    */
-  uint8_t ReadReg(reg_t reg) {
+  uint8_t read_reg(reg_t reg) {
     uint8_t val;
-    rd_nrf(reg, &val);
+    rd_reg(reg, &val);
     return val;
   }
 
@@ -394,14 +432,14 @@ public:
    * @param reg Register address enum (see reg_t)
    * @param val The value to be write
    */
-  void WriteReg(reg_t reg, uint8_t val) { wr_nrf(reg, val); }
+  void write_reg(reg_t reg, uint8_t val) { wr_reg(reg, val); }
 
   /**
    *
    * @param val
    * @return
    */
-  uint32_t GetStatus(stat_t val);
+  uint32_t get_status(stat_t val);
 
 private:
   /**
@@ -416,7 +454,7 @@ private:
    * @param pVal The pointer to variable for read value
    * @return The content of status register
    */
-  int rd_nrf(uint8_t addr, uint8_t* pVal);
+  int rd_reg(uint8_t addr, uint8_t* pVal);
 
   /**
    * Read the content of addressable registers in NRF24L01
@@ -426,7 +464,7 @@ private:
    * @param len Size of the buffer
    * @return The content of status register
    */
-  int rd_nrf(uint8_t addr, uint8_t* pBuff, uint8_t len);
+  int rd_reg(uint8_t addr, uint8_t* pBuff, uint8_t len);
 
   /**
    * Write the content of an addressable register in NRF24L01
@@ -435,7 +473,7 @@ private:
    * @param val  The value to be write into the register
    * @return The content of status register
    */
-  int wr_nrf(uint8_t addr, uint8_t val);
+  int wr_reg(uint8_t addr, uint8_t val);
 
   /**
    * Write the content of addressable registers in NRF24L01
@@ -445,14 +483,33 @@ private:
    * @param len Size of the buffer
    * @return The content of status register
    */
-  int wr_nrf(uint8_t addr, const uint8_t* pBuff, uint8_t len);
+  int wr_reg(uint8_t addr, const uint8_t* pBuff, uint8_t len);
+
+  /**
+   *
+   * @param pipe
+   * @param pBuff
+   * @param len
+   * @return
+   */
+  int rd_data(uint8_t *pipe, uint8_t *pBuff, uint8_t len);
+
+  /**
+   *
+   * @param pipe
+   * @param pBuff
+   * @param len
+   * @param ack
+   * @return
+   */
+  int wr_data(const uint8_t *pBuff, uint16_t len, bool ack);
 
   /**
    * Get the contents of the status register and clear IRQ flags.
    *
    * @return the contents of the status register
    */
-  int get_status(void);
+  uint8_t get_status();
 
   /**
    * Get RX frame size
@@ -489,24 +546,24 @@ private:
   const conf_t *m_conf;
 
   /* RX FIFO buffer */
-  uint8_t      *m_pHead;
-  uint8_t      *m_pTail;
-  uint8_t      *m_pRdIndex;
-  uint8_t      *m_pWrIndex;
-  uint8_t       m_rxItmSize;
-  uint8_t       m_rxSize;
-  uint8_t       m_rxCount;
+  uint8_t      *m_pBuff;
+  uint8_t      *m_pBuffRdI;
+  uint8_t      *m_pBuffWrI;
+  uint16_t      m_buffPlCnt;
+  uint16_t      m_buffSize;
+  uint16_t      m_buffFree;
 
-  /* Automatic Acknowledge  */
-  ack_t         m_autoAck;
+  /* TX Control */
+  const uint8_t *m_pTxIndex;
+  uint16_t      m_txLen;
+  bool          m_txAck;
 
   /* RX CallBack function pointer */
   rfcb_t        m_cbFunc;
   uint8_t       m_cbMask;
 
   /* Operation Mode */
-  mode_t        m_actualMode;
-  mode_t        m_defaultMode;
+  mode_t        m_opMode;
 
   /* RX/TX Errors */
   uint32_t      m_rxErr;
